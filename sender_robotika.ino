@@ -39,7 +39,7 @@ const long interval = 1000;        // Interval at which to publish sensor readin
 unsigned int readingId = 0;
 
 // Insert your SSID
-constexpr char WIFI_SSID[] = "Oppo A92";
+constexpr char WIFI_SSID[] = "Galaxy";
 
 int32_t getWiFiChannel(const char *ssid) {
   if (int32_t n = WiFi.scanNetworks()) {
