@@ -10,115 +10,251 @@
 */
 
 #include <esp_now.h>
-#include <esp_wifi.h>
 #include <WiFi.h>
+#include "ESPAsyncWebServer.h"
+#include <Arduino_JSON.h>
 
-// Set your Board ID (ESP32 Sender #1 = BOARD_ID 1, ESP32 Sender #2 = BOARD_ID 2, etc)
-#define BOARD_ID 1
+// Replace with your network credentials (STATION)
+const char* ssid = "Galaxy";
+const char* password = "jamesbarat";
 
-////MAC Address of the receiver 
-//uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-uint8_t broadcastAddress[] = {0xC0, 0x49, 0xEF, 0xF0, 0x0C, 0xF4};
 
-#define soilPin 34
+const char* PARAM_INPUT_1 = "state";
 
-//Structure example to send data
-//Must match the receiver structure
+//Button buat nyala mati dari website
+int ledState = LOW; // the current state of the output pin
+
+// Structure example to receive data
+// Must match the sender structure
 typedef struct struct_message {
     int id;
     int readingId;
     float soil;
 } struct_message;
 
-//Create a struct_message called myData
-struct_message myData;
+struct_message incomingReadings;
 
-unsigned long previousMillis = 0;   // Stores last time temperature was published
-const long interval = 1000;        // Interval at which to publish sensor readings
+JSONVar board;
 
-unsigned int readingId = 0;
+AsyncWebServer server(80);
+AsyncEventSource events("/events");
 
-// Insert your SSID
-constexpr char WIFI_SSID[] = "Galaxy";
+// callback function that will be executed when data is received
+void OnDataRecv(const uint8_t * mac_addr, const uint8_t *incomingData, int len) { 
+  // Copies the sender mac address to a string
+  char macStr[18];
+  Serial.print("Packet received from: ");
+  snprintf(macStr, sizeof(macStr), "%02x:%02x:%02x:%02x:%02x:%02x",
+           mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
+  Serial.println(macStr);
+  memcpy(&incomingReadings, incomingData, sizeof(incomingReadings));
+  
+  board["id"] = incomingReadings.id;
+  board["readingId"] = String(incomingReadings.readingId);
+  board["soil"] = incomingReadings.soil;
+  String jsonString = JSON.stringify(board);
+  events.send(jsonString.c_str(), "new_readings", millis());
+  
+  Serial.printf("Board ID %u: %u bytes\n", incomingReadings.id, len);
+  Serial.printf("readingID value: %d \n", incomingReadings.readingId);
+  Serial.printf("t value: %4.2f \n", incomingReadings.soil);
+  Serial.println();
+}
 
-int32_t getWiFiChannel(const char *ssid) {
-  if (int32_t n = WiFi.scanNetworks()) {
-      for (uint8_t i=0; i<n; i++) {
-          if (!strcmp(ssid, WiFi.SSID(i).c_str())) {
-              return WiFi.channel(i);
+const char index_html[] PROGMEM = R"rawliteral(
+<!DOCTYPE HTML><html>
+<head>
+  <title>ESP-NOW DASHBOARD</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.7.2/css/all.css" integrity="sha384-fnmOCqbTlWIlj8LyTjo7mOUStjsKC4pOpQbqyi7RrhN7udi9RwhKkMHpvLbHG9Sr" crossorigin="anonymous">
+  <link rel="icon" href="data:,">
+  <style>
+    html {font-family: Arial; display: inline-block; text-align: center;}
+    h3 {font-size: 3.0rem;} // baru
+    p {  font-size: 3.0 rem;}
+    body {  margin: 0;}
+    .topnav { overflow: hidden; background-color: #2f4468; color: white; font-size: 1.7rem; }
+    .content { padding: 20px; }
+    .card { background-color: white; box-shadow: 2px 2px 12px 1px rgba(140,140,140,.5); }
+    .cards { max-width: 700px; margin: 0 auto; display: grid; grid-gap: 2rem; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+    .reading { font-size: 2.8rem; }
+    .packet { color: #bebebe; }
+    .card.temperature { color: #fd7e14; }
+    .card.humidity { color: #1b78e2; }
+
+    //dii bawah ini baru semua
+    .button{max-width: 300px;padding-bottom: 25px;}
+    .button.switch {position: relative; display: inline-block; width: 120px; height: 68px} 
+    .button.switch input {display: none}
+    .button.slider {position: absolute; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; border-radius: 34px}
+    .button.slider:before {position: absolute; content: ""; height: 52px; width: 52px; left: 8px; bottom: 8px; background-color: #fff; -webkit-transition: .4s; transition: .4s; border-radius: 68px}
+    input:checked+.button.slider {background-color: #2196F3}
+    input:checked+.button.slider:before {-webkit-transform: translateX(52px); -ms-transform: translateX(52px); transform: translateX(52px)}
+  </style>
+</head>
+<body>
+  <div class="topnav">
+    <h3>ESP-NOW DASHBOARD</h3>
+  </div>
+  <div class="content">
+    <div class="cards">
+      <div class="card temperature">
+        <h4><i class="fas fa-thermometer-half"></i> Soil Humidity</h4><p><span class="reading"><span id="t1"></span>&percnt;</span></p><p class="packet">Reading ID: <span id="rt1"></span></p>
+      </div>
+      <div class="card humidity">
+          %BUTTONPLACEHOLDER%
+      </div>
+        <script>function toggleCheckbox(element) {
+          var xhr = new XMLHttpRequest();
+          if(element.checked){ xhr.open("GET", "/update?state=1", true); }
+          else { xhr.open("GET", "/update?state=0", true); }
+          xhr.send();
+        }
+        setInterval(function ( ) {
+        var xhttp = new XMLHttpRequest();
+        xhttp.onreadystatechange = function() {
+          if (this.readyState == 4 && this.status == 200) {
+            var inputChecked;
+            var outputStateM;
+            if( this.responseText == 1){ 
+              inputChecked = true;
+              outputStateM = "On";
+            }
+            else { 
+              inputChecked = false;
+              outputStateM = "Off";
+            }
+            document.getElementById("output").checked = inputChecked;
+            document.getElementById("outputState").innerHTML = outputStateM;
           }
-      }
+        };
+        xhttp.open("GET", "/state", true);
+        xhttp.send();
+        }, 1000 ) ;
+        </script>
+      </div>
+    </div>
+  </div>
+<script>
+if (!!window.EventSource) {
+ var source = new EventSource('/events');
+ 
+ source.addEventListener('open', function(e) {
+  console.log("Events Connected");
+ }, false);
+ source.addEventListener('error', function(e) {
+  if (e.target.readyState != EventSource.OPEN) {
+    console.log("Events Disconnected");
   }
-  return 0;
-}
-
-// callback when data is sent
-
-float readSoil(){
-  float h = analogRead(soilPin);
-  h = h*100/1960;
-  Serial.println(h);
-  return h;
-}
-
-void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
-  Serial.print("\r\nLast Packet Send Status:\t");
-  Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Delivery Success" : "Delivery Fail");
-}
+ }, false);
  
+ source.addEventListener('message', function(e) {
+  console.log("message", e.data);
+ }, false);
+ 
+ source.addEventListener('new_readings', function(e) {
+  console.log("new_readings", e.data);
+  var obj = JSON.parse(e.data);
+  document.getElementById("t"+obj.id).innerHTML = obj.soil.toFixed(2);
+  document.getElementById("rt"+obj.id).innerHTML = obj.readingId;
+ }, false);
+}
+
+</script>
+
+</body>
+</html>)rawliteral";
+
+
+String outputState(){
+  if(ledState==HIGH){
+    return "checked";
+  }
+  else {
+    return "";
+  }
+  return "";
+}
+
+// Replaces placeholder with button section in your web page
+String processor(const String& var){
+  //Serial.println(var);
+  if(var == "BUTTONPLACEHOLDER"){
+    String buttons ="";
+    String outputStateValue = outputState();
+    buttons+= "<h4>Power Button <span id=\"outputState\"></span></h4><label class=\"button switch\"><input type=\"checkbox\" onchange=\"toggleCheckbox(this)\" id=\"output\" " + outputStateValue +"><span class=\"button slider\"></span></label>";
+    return buttons;
+  }
+  return String();
+}
 void setup() {
-  //Init Serial Monitor
+  // Initialize Serial Monitor
   Serial.begin(115200);
- 
-  // Set device as a Wi-Fi Station and set channel
-  WiFi.mode(WIFI_STA);
 
-  int32_t channel = getWiFiChannel(WIFI_SSID);
+  // Set the device as a Station and Soft Access Point simultaneously
+  WiFi.mode(WIFI_AP_STA);
+  
+  // Set device as a Wi-Fi Station
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.println("Setting as a Wi-Fi Station..");
+  }
+  Serial.print("Station IP Address: ");
+  Serial.println(WiFi.localIP());
+  Serial.print("Wi-Fi Channel: ");
+  Serial.println(WiFi.channel());
 
-  WiFi.printDiag(Serial); // Uncomment to verify channel number before
-  esp_wifi_set_promiscuous(true);
-  esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
-  esp_wifi_set_promiscuous(false);
-  WiFi.printDiag(Serial); // Uncomment to verify channel change after
-
-  //Init ESP-NOW
+  // Init ESP-NOW
   if (esp_now_init() != ESP_OK) {
     Serial.println("Error initializing ESP-NOW");
     return;
   }
+  
+  // Once ESPNow is successfully Init, we will register for recv CB to
+  // get recv packer info
+  esp_now_register_recv_cb(OnDataRecv);
 
-  // Once ESPNow is successfully Init, we will register for Send CB to
-  // get the status of Trasnmitted packet
-  esp_now_register_send_cb(OnDataSent);
-  
-  //Register peer
-  esp_now_peer_info_t peerInfo;
-  memcpy(peerInfo.peer_addr, broadcastAddress, 6);
-  peerInfo.encrypt = false;
-  
-  //Add peer        
-  if (esp_now_add_peer(&peerInfo) != ESP_OK){
-    Serial.println("Failed to add peer");
-    return;
-  }
+  // Route for root / web page
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send_P(200, "text/html", index_html, processor);
+  });
+
+  // Send a GET request to <ESP_IP>/update?state=<inputMessage>
+  server.on("/update", HTTP_GET, [] (AsyncWebServerRequest *request) {
+    String inputMessage;
+    String inputParam;
+    // GET input1 value on <ESP_IP>/update?state=<inputMessage>
+    if (request->hasParam(PARAM_INPUT_1)) {
+      inputMessage = request->getParam(PARAM_INPUT_1)->value();
+      inputParam = PARAM_INPUT_1;
+      ledState = !ledState;
+    }
+    else {
+      inputMessage = "No message sent";
+      inputParam = "none";
+    }
+    Serial.println(inputMessage);
+    request->send(200, "text/plain", "OK");
+  });
+   
+  events.onConnect([](AsyncEventSourceClient *client){
+    if(client->lastId()){
+      Serial.printf("Client reconnected! Last message ID that it got is: %u\n", client->lastId());
+    }
+    // send event with message "hello!", id current millis
+    // and set reconnect delay to 1 second
+    client->send("hello!", NULL, millis(), 10000);
+  });
+  server.addHandler(&events);
+  server.begin();
 }
  
 void loop() {
-  unsigned long currentMillis = millis();
-  if (currentMillis - previousMillis >= interval) {
-    // Save the last time a new reading was published
-    previousMillis = currentMillis;
-    //Set values to send
-    myData.id = BOARD_ID;
-    myData.readingId = readingId++;
-    myData.soil = readSoil();
-     
-    esp_err_t result = esp_now_send(broadcastAddress, (uint8_t *) &myData, sizeof(myData));
-    if (result == ESP_OK) {
-      Serial.println("Sent with success");
-    }
-    else {
-      Serial.println("Error sending the data");
-    }
+  static unsigned long lastEventTime = millis();
+  static const unsigned long EVENT_INTERVAL_MS = 5000;
+  if ((millis() - lastEventTime) > EVENT_INTERVAL_MS) {
+    events.send("ping",NULL,millis());
+    lastEventTime = millis();
   }
 }
